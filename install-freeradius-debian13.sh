@@ -148,7 +148,6 @@ sed -i '/^[[:space:]]*detail/s/^/## /' "${FREERADIUS_DIR}/sites-available/defaul
 sed -i '/^[[:space:]]*unix/s/^/## /' "${FREERADIUS_DIR}/sites-available/default"
 sed -i '/^[[:space:]]*attr_filter.accounting_response/s/^/## /' "${FREERADIUS_DIR}/sites-available/default"
 sed -i 's/-sql/sql/' "${FREERADIUS_DIR}/sites-available/default"
-sed -i '741 s/# *//' "${FREERADIUS_DIR}/sites-available/default"
 sed -i '958,970 {s/^/##/}' "${FREERADIUS_DIR}/sites-available/default"
 sed -i '/^[[:space:]]*#.*sqlippool/s/^#//' "${FREERADIUS_DIR}/sites-available/default"
 
@@ -158,7 +157,6 @@ sed -i '/^[[:space:]]*files/s/^/## /' "${FREERADIUS_DIR}/sites-available/inner-t
 sed -i '/^[[:space:]]*-ldap/s/^/## /' "${FREERADIUS_DIR}/sites-available/inner-tunnel"
 sed -i 's/-sql/sql/' "${FREERADIUS_DIR}/sites-available/inner-tunnel"
 sed -i '/^[[:space:]]*radutmp/s/^/## /' "${FREERADIUS_DIR}/sites-available/inner-tunnel"
-sed -i '266 s/# *//' "${FREERADIUS_DIR}/sites-available/inner-tunnel"
 sed -i '336,361 {s/^/##/}' "${FREERADIUS_DIR}/sites-available/inner-tunnel"
 sed -i '370,381 {s/^/##/}' "${FREERADIUS_DIR}/sites-available/inner-tunnel"
 
