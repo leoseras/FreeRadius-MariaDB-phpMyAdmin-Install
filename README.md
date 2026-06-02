@@ -9,9 +9,6 @@ Script de instalacao automatizada para Debian 13 com:
 - FreeRADIUS SQL com MariaDB
 - FreeRADIUS sqlippool
 
-Baseado no tutorial do Remontti:
-https://blog.remontti.com.br/7784
-
 ## Uso
 
 Execute como root em um Debian 13 limpo:
