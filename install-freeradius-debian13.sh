@@ -253,9 +253,7 @@ fi
 log "Fazendo backup dos arquivos de configuracao"
 backup_file "${FREERADIUS_DIR}/radiusd.conf"
 backup_file "${FREERADIUS_DIR}/mods-available/sql"
-backup_file "${FREERADIUS_DIR}/mods-available/eap"
 backup_file "${FREERADIUS_DIR}/sites-available/default"
-backup_file "${FREERADIUS_DIR}/sites-available/inner-tunnel"
 backup_file "${FREERADIUS_DIR}/mods-available/sqlippool"
 
 log "Configurando logs de autenticacao"
@@ -279,23 +277,11 @@ comment_mysql_tls_block "${SQL_CONF}"
 ln -sfn "${FREERADIUS_DIR}/mods-available/sql" "${FREERADIUS_DIR}/mods-enabled/sql"
 ln -sfn "${FREERADIUS_DIR}/mods-available/sqlippool" "${FREERADIUS_DIR}/mods-enabled/sqlippool"
 
-log "Ajustando EAP/TLS conforme tutorial"
-sed -i 's/disable_tlsv1_2 = yes/disable_tlsv1_2 = no/' "${FREERADIUS_DIR}/mods-available/eap"
-sed -i 's/disable_tlsv1_1 = yes/disable_tlsv1_1 = no/' "${FREERADIUS_DIR}/mods-available/eap"
-sed -i 's/disable_tlsv1 = yes/disable_tlsv1 = no/' "${FREERADIUS_DIR}/mods-available/eap"
-sed -i '/disable_tlsv1/s/^#//g' "${FREERADIUS_DIR}/mods-available/eap"
-sed -i 's/tls_min_version = "1.2"/tls_min_version = "1.0"/' "${FREERADIUS_DIR}/mods-available/eap"
-
 log "Ajustando site default"
 DEFAULT_SITE="${FREERADIUS_DIR}/sites-available/default"
 sed -i -E '/^[[:space:]]*(digest|suffix|files|-ldap|exec|detail|unix|attr_filter\.accounting_response)\b/s/^/## /' "${DEFAULT_SITE}"
 sed -i -E 's/^([[:space:]]*)-sql/\1sql/' "${DEFAULT_SITE}"
 sed -i -E '/^[[:space:]]*#.*sqlippool/s/^([[:space:]]*)#[[:space:]]*/\1/' "${DEFAULT_SITE}"
-
-log "Ajustando inner-tunnel"
-INNER_TUNNEL="${FREERADIUS_DIR}/sites-available/inner-tunnel"
-sed -i -E '/^[[:space:]]*(suffix|files|-ldap|radutmp)\b/s/^/## /' "${INNER_TUNNEL}"
-sed -i -E 's/^([[:space:]]*)-sql/\1sql/' "${INNER_TUNNEL}"
 
 log "Configurando sqlippool"
 SQLIPPOOL_CONF="${FREERADIUS_DIR}/mods-available/sqlippool"
