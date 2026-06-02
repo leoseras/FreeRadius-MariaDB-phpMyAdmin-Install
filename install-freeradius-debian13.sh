@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# Uso em um comando, depois de hospedar este arquivo:
-# curl -fsSL https://SEU_DOMINIO/install-freeradius-debian13.sh | bash
+# Uso em um comando:
+# curl -fsSL https://raw.githubusercontent.com/leoseras/FreeRadius-MariaDB-phpMyAdmin-Install/main/install-freeradius-debian13.sh | bash
+#
+# O script solicita a senha no terminal. Para automacao, voce tambem pode usar:
+# curl -fsSL URL_DO_SCRIPT | RADIUS_INSTALL_PASSWORD='sua-senha' bash
 
-PASSWORD='C@Ca0823$!'
-RADIUS_DB='radius'
-RADIUS_USER='radius'
-FREERADIUS_DIR='/etc/freeradius/3.0'
+RADIUS_DB="${RADIUS_DB:-radius}"
+RADIUS_USER="${RADIUS_USER:-radius}"
+FREERADIUS_DIR="${FREERADIUS_DIR:-/etc/freeradius/3.0}"
+PASSWORD="${RADIUS_INSTALL_PASSWORD:-}"
+MYSQL_ROOT_CNF=""
+MYSQL_RADIUS_CNF=""
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -15,35 +20,183 @@ log() {
   printf '\n==> %s\n' "$*"
 }
 
+die() {
+  echo "Erro: $*" >&2
+  exit 1
+}
+
 require_root() {
   if [[ "${EUID}" -ne 0 ]]; then
-    echo "Execute como root: su - ou sudo bash $0" >&2
-    exit 1
+    die "execute como root: su - ou sudo bash $0"
   fi
+}
+
+cleanup() {
+  [[ -n "${MYSQL_ROOT_CNF}" && -f "${MYSQL_ROOT_CNF}" ]] && rm -f "${MYSQL_ROOT_CNF}"
+  [[ -n "${MYSQL_RADIUS_CNF}" && -f "${MYSQL_RADIUS_CNF}" ]] && rm -f "${MYSQL_RADIUS_CNF}"
 }
 
 backup_file() {
   local file="$1"
-  if [[ -f "$file" && ! -f "${file}.orig" ]]; then
-    cp "$file" "${file}.orig"
+  if [[ -f "${file}" && ! -f "${file}.orig" ]]; then
+    cp "${file}" "${file}.orig"
   fi
 }
 
+validate_identifier() {
+  local name="$1"
+  local value="$2"
+
+  if [[ ! "${value}" =~ ^[A-Za-z0-9_]+$ ]]; then
+    die "${name} deve conter apenas letras, numeros e underscore"
+  fi
+}
+
+prompt_password() {
+  local first=""
+  local second=""
+
+  if [[ -n "${PASSWORD}" ]]; then
+    return
+  fi
+
+  if [[ ! -r /dev/tty ]]; then
+    die "nenhum terminal interativo disponivel. Defina RADIUS_INSTALL_PASSWORD para execucao automatizada"
+  fi
+
+  while true; do
+    read -r -s -p "Senha para MariaDB, usuario radius e phpMyAdmin: " first < /dev/tty
+    printf '\n' > /dev/tty
+    read -r -s -p "Confirme a senha: " second < /dev/tty
+    printf '\n' > /dev/tty
+
+    if [[ -z "${first}" ]]; then
+      echo "A senha nao pode ficar vazia." > /dev/tty
+      continue
+    fi
+
+    if [[ "${first}" != "${second}" ]]; then
+      echo "As senhas nao conferem. Tente novamente." > /dev/tty
+      continue
+    fi
+
+    PASSWORD="${first}"
+    break
+  done
+}
+
+sql_escape() {
+  local value="$1"
+  value=${value//\\/\\\\}
+  value=${value//\'/\'\'}
+  printf '%s' "${value}"
+}
+
+freeradius_string_escape() {
+  local value="$1"
+  value=${value//\\/\\\\}
+  value=${value//\"/\\\"}
+  printf '%s' "${value}"
+}
+
+sed_replacement_escape() {
+  local value="$1"
+  value=${value//\\/\\\\}
+  value=${value//&/\\&}
+  value=${value//|/\\|}
+  printf '%s' "${value}"
+}
+
+write_mysql_defaults() {
+  MYSQL_ROOT_CNF="$(mktemp)"
+  MYSQL_RADIUS_CNF="$(mktemp)"
+  chmod 600 "${MYSQL_ROOT_CNF}" "${MYSQL_RADIUS_CNF}"
+
+  cat > "${MYSQL_ROOT_CNF}" <<EOF
+[client]
+user=root
+password=${PASSWORD}
+EOF
+
+  cat > "${MYSQL_RADIUS_CNF}" <<EOF
+[client]
+user=${RADIUS_USER}
+password=${PASSWORD}
+EOF
+}
+
 mysql_root() {
-  mariadb -uroot -p"${PASSWORD}" "$@"
+  mariadb --defaults-extra-file="${MYSQL_ROOT_CNF}" "$@"
 }
 
 mysql_radius() {
-  mariadb -u"${RADIUS_USER}" -p"${PASSWORD}" "${RADIUS_DB}" "$@"
+  mariadb --defaults-extra-file="${MYSQL_RADIUS_CNF}" "${RADIUS_DB}" "$@"
+}
+
+comment_mysql_tls_block() {
+  local file="$1"
+  local tmp
+
+  tmp="$(mktemp)"
+  awk '
+    /^[[:space:]]*mysql[[:space:]]*\{/ {
+      in_mysql = 1
+    }
+
+    in_mysql && /^[[:space:]]*tls[[:space:]]*\{/ {
+      in_tls = 1
+    }
+
+    in_tls {
+      print "##" $0
+      if ($0 ~ /^[[:space:]]*\}[[:space:]]*$/) {
+        in_tls = 0
+      }
+      next
+    }
+
+    in_mysql && /^[[:space:]]*\}[[:space:]]*$/ {
+      in_mysql = 0
+    }
+
+    {
+      print
+    }
+  ' "${file}" > "${tmp}"
+  cat "${tmp}" > "${file}"
+  rm -f "${tmp}"
+}
+
+configure_mariadb_root() {
+  log "Configurando senha do root do MariaDB"
+
+  if mariadb -uroot -e "SELECT 1" >/dev/null 2>&1; then
+    mariadb -uroot <<EOF
+ALTER USER 'root'@'localhost' IDENTIFIED BY '${SQL_PASSWORD}';
+FLUSH PRIVILEGES;
+EOF
+  fi
+
+  write_mysql_defaults
+  mysql_root -e "SELECT 1" >/dev/null || die "nao foi possivel autenticar no MariaDB com a senha informada"
+  : > /root/.mysql_history
 }
 
 require_root
+trap cleanup EXIT
+
+validate_identifier "RADIUS_DB" "${RADIUS_DB}"
+validate_identifier "RADIUS_USER" "${RADIUS_USER}"
+prompt_password
+
+SQL_PASSWORD="$(sql_escape "${PASSWORD}")"
+FREERADIUS_PASSWORD="$(freeradius_string_escape "${PASSWORD}")"
+FREERADIUS_PASSWORD_SED="$(sed_replacement_escape "${FREERADIUS_PASSWORD}")"
 
 if [[ -r /etc/os-release ]]; then
   . /etc/os-release
   if [[ "${ID:-}" != "debian" ]]; then
-    echo "Este script foi preparado para Debian 13." >&2
-    exit 1
+    die "este script foi preparado para Debian 13"
   fi
   if [[ "${VERSION_ID:-}" != "13" ]]; then
     echo "Aviso: detectado Debian ${VERSION_ID:-desconhecido}; continuando mesmo assim."
@@ -55,13 +208,13 @@ apt-get update
 apt-get upgrade -y
 
 log "Preconfigurando phpMyAdmin"
-debconf-set-selections <<EOF
-phpmyadmin phpmyadmin/dbconfig-install boolean true
-phpmyadmin phpmyadmin/app-password-confirm password ${PASSWORD}
-phpmyadmin phpmyadmin/mysql/admin-pass password ${PASSWORD}
-phpmyadmin phpmyadmin/mysql/app-pass password ${PASSWORD}
-phpmyadmin phpmyadmin/reconfigure-webserver multiselect apache2
-EOF
+{
+  printf 'phpmyadmin phpmyadmin/dbconfig-install boolean true\n'
+  printf 'phpmyadmin phpmyadmin/app-password-confirm password %s\n' "${PASSWORD}"
+  printf 'phpmyadmin phpmyadmin/mysql/admin-pass password %s\n' "${PASSWORD}"
+  printf 'phpmyadmin phpmyadmin/mysql/app-pass password %s\n' "${PASSWORD}"
+  printf 'phpmyadmin phpmyadmin/reconfigure-webserver multiselect apache2\n'
+} | debconf-set-selections
 
 log "Instalando Apache, PHP, MariaDB, phpMyAdmin e FreeRADIUS"
 apt-get install -y \
@@ -77,25 +230,19 @@ sed -i 's/ServerTokens OS/ServerTokens Prod/' /etc/apache2/conf-available/securi
 sed -i 's/ServerSignature On/ServerSignature Off/' /etc/apache2/conf-available/security.conf
 systemctl restart apache2
 
-log "Configurando senha do root do MariaDB"
-mariadb -uroot <<EOF
-ALTER USER 'root'@'localhost' IDENTIFIED BY '${PASSWORD}';
-FLUSH PRIVILEGES;
-EOF
-: > /root/.mysql_history
+configure_mariadb_root
 
-log "Criando banco e usuário do FreeRADIUS"
+log "Criando banco e usuario do FreeRADIUS"
 mysql_root <<EOF
 CREATE DATABASE IF NOT EXISTS ${RADIUS_DB};
-CREATE USER IF NOT EXISTS '${RADIUS_USER}'@'localhost' IDENTIFIED BY '${PASSWORD}';
-ALTER USER '${RADIUS_USER}'@'localhost' IDENTIFIED BY '${PASSWORD}';
+CREATE USER IF NOT EXISTS '${RADIUS_USER}'@'localhost' IDENTIFIED BY '${SQL_PASSWORD}';
+ALTER USER '${RADIUS_USER}'@'localhost' IDENTIFIED BY '${SQL_PASSWORD}';
 GRANT ALL PRIVILEGES ON ${RADIUS_DB}.* TO '${RADIUS_USER}'@'localhost';
 FLUSH PRIVILEGES;
 EOF
 
 if [[ ! -d "${FREERADIUS_DIR}" ]]; then
-  echo "Diretório ${FREERADIUS_DIR} não encontrado. Verifique a versão/pacote do FreeRADIUS." >&2
-  exit 1
+  die "diretorio ${FREERADIUS_DIR} nao encontrado. Verifique a versao/pacote do FreeRADIUS"
 fi
 
 log "Importando schema SQL do FreeRADIUS"
@@ -103,7 +250,7 @@ if ! mysql_radius -e 'SHOW TABLES LIKE "radcheck";' | grep -q radcheck; then
   mysql_radius < "${FREERADIUS_DIR}/mods-config/sql/main/mysql/schema.sql"
 fi
 
-log "Fazendo backup dos arquivos de configuração"
+log "Fazendo backup dos arquivos de configuracao"
 backup_file "${FREERADIUS_DIR}/radiusd.conf"
 backup_file "${FREERADIUS_DIR}/mods-available/sql"
 backup_file "${FREERADIUS_DIR}/mods-available/eap"
@@ -111,22 +258,23 @@ backup_file "${FREERADIUS_DIR}/sites-available/default"
 backup_file "${FREERADIUS_DIR}/sites-available/inner-tunnel"
 backup_file "${FREERADIUS_DIR}/mods-available/sqlippool"
 
-log "Configurando logs de autenticação"
-sed -i '/^\s*stripped_names = no/s/^\(\s*stripped_names =\) no/\1 yes/g' "${FREERADIUS_DIR}/radiusd.conf"
-sed -i '/^\s*auth = no/s/^\(\s*auth =\) no/\1 yes/g' "${FREERADIUS_DIR}/radiusd.conf"
-sed -i '/^\s*auth_badpass = no/s/^\(\s*auth_badpass =\) no/\1 yes/g' "${FREERADIUS_DIR}/radiusd.conf"
-sed -i '/^\s*auth_goodpass = no/s/^\(\s*auth_goodpass =\) no/\1 yes/g' "${FREERADIUS_DIR}/radiusd.conf"
+log "Configurando logs de autenticacao"
+sed -i -E '/^[[:space:]]*stripped_names = no/s/(stripped_names = )no/\1yes/' "${FREERADIUS_DIR}/radiusd.conf"
+sed -i -E '/^[[:space:]]*auth = no/s/(auth = )no/\1yes/' "${FREERADIUS_DIR}/radiusd.conf"
+sed -i -E '/^[[:space:]]*auth_badpass = no/s/(auth_badpass = )no/\1yes/' "${FREERADIUS_DIR}/radiusd.conf"
+sed -i -E '/^[[:space:]]*auth_goodpass = no/s/(auth_goodpass = )no/\1yes/' "${FREERADIUS_DIR}/radiusd.conf"
 
-log "Configurando módulo SQL"
-sed -i 's/driver = "rlm_sql_null"/driver = "rlm_sql_mysql"/' "${FREERADIUS_DIR}/mods-available/sql"
-sed -i 's/dialect = "sqlite"/dialect = "mysql"/' "${FREERADIUS_DIR}/mods-available/sql"
-sed -i '/server = "localhost"/s/^#//g' "${FREERADIUS_DIR}/mods-available/sql"
-sed -i '/port = 3306/s/^#//g' "${FREERADIUS_DIR}/mods-available/sql"
-sed -i '/login = "radius"/s/^#//g' "${FREERADIUS_DIR}/mods-available/sql"
-sed -i '/password = "radpass"/s/^#//g' "${FREERADIUS_DIR}/mods-available/sql"
-sed -i '/read_clients = yes/s/^#//g' "${FREERADIUS_DIR}/mods-available/sql"
-sed -i "s/radpass/${PASSWORD//\//\\/}/" "${FREERADIUS_DIR}/mods-available/sql"
-sed -i '84,102 {s/^/##/}' "${FREERADIUS_DIR}/mods-available/sql"
+log "Configurando modulo SQL"
+SQL_CONF="${FREERADIUS_DIR}/mods-available/sql"
+sed -i -E 's|^([[:space:]]*)driver = "rlm_sql_null"|\1driver = "rlm_sql_mysql"|' "${SQL_CONF}"
+sed -i -E 's|^([[:space:]]*)dialect = "sqlite"|\1dialect = "mysql"|' "${SQL_CONF}"
+sed -i -E 's|^#?([[:space:]]*)server = .*|\1server = "localhost"|' "${SQL_CONF}"
+sed -i -E 's|^#?([[:space:]]*)port = .*|\1port = 3306|' "${SQL_CONF}"
+sed -i -E "s|^#?([[:space:]]*)login = .*|\\1login = \"${RADIUS_USER}\"|" "${SQL_CONF}"
+sed -i -E "s|^#?([[:space:]]*)password = .*|\\1password = \"${FREERADIUS_PASSWORD_SED}\"|" "${SQL_CONF}"
+sed -i -E "s|^#?([[:space:]]*)radius_db = .*|\\1radius_db = \"${RADIUS_DB}\"|" "${SQL_CONF}"
+sed -i -E 's|^#?([[:space:]]*)read_clients = .*|\1read_clients = yes|' "${SQL_CONF}"
+comment_mysql_tls_block "${SQL_CONF}"
 
 ln -sfn "${FREERADIUS_DIR}/mods-available/sql" "${FREERADIUS_DIR}/mods-enabled/sql"
 ln -sfn "${FREERADIUS_DIR}/mods-available/sqlippool" "${FREERADIUS_DIR}/mods-enabled/sqlippool"
@@ -139,32 +287,22 @@ sed -i '/disable_tlsv1/s/^#//g' "${FREERADIUS_DIR}/mods-available/eap"
 sed -i 's/tls_min_version = "1.2"/tls_min_version = "1.0"/' "${FREERADIUS_DIR}/mods-available/eap"
 
 log "Ajustando site default"
-sed -i '/^[[:space:]]*digest/s/^/## /' "${FREERADIUS_DIR}/sites-available/default"
-sed -i '/^[[:space:]]*suffix/s/^/## /' "${FREERADIUS_DIR}/sites-available/default"
-sed -i '/^[[:space:]]*files/s/^/## /' "${FREERADIUS_DIR}/sites-available/default"
-sed -i '/^[[:space:]]*-ldap/s/^/## /' "${FREERADIUS_DIR}/sites-available/default"
-sed -i '/^[[:space:]]*exec/s/^/## /' "${FREERADIUS_DIR}/sites-available/default"
-sed -i '/^[[:space:]]*detail/s/^/## /' "${FREERADIUS_DIR}/sites-available/default"
-sed -i '/^[[:space:]]*unix/s/^/## /' "${FREERADIUS_DIR}/sites-available/default"
-sed -i '/^[[:space:]]*attr_filter.accounting_response/s/^/## /' "${FREERADIUS_DIR}/sites-available/default"
-sed -i 's/-sql/sql/' "${FREERADIUS_DIR}/sites-available/default"
-sed -i '958,970 {s/^/##/}' "${FREERADIUS_DIR}/sites-available/default"
-sed -i '/^[[:space:]]*#.*sqlippool/s/^#//' "${FREERADIUS_DIR}/sites-available/default"
+DEFAULT_SITE="${FREERADIUS_DIR}/sites-available/default"
+sed -i -E '/^[[:space:]]*(digest|suffix|files|-ldap|exec|detail|unix|attr_filter\.accounting_response)\b/s/^/## /' "${DEFAULT_SITE}"
+sed -i -E 's/^([[:space:]]*)-sql/\1sql/' "${DEFAULT_SITE}"
+sed -i -E '/^[[:space:]]*#.*sqlippool/s/^([[:space:]]*)#[[:space:]]*/\1/' "${DEFAULT_SITE}"
 
 log "Ajustando inner-tunnel"
-sed -i '/^[[:space:]]*suffix/s/^/## /' "${FREERADIUS_DIR}/sites-available/inner-tunnel"
-sed -i '/^[[:space:]]*files/s/^/## /' "${FREERADIUS_DIR}/sites-available/inner-tunnel"
-sed -i '/^[[:space:]]*-ldap/s/^/## /' "${FREERADIUS_DIR}/sites-available/inner-tunnel"
-sed -i 's/-sql/sql/' "${FREERADIUS_DIR}/sites-available/inner-tunnel"
-sed -i '/^[[:space:]]*radutmp/s/^/## /' "${FREERADIUS_DIR}/sites-available/inner-tunnel"
-sed -i '336,361 {s/^/##/}' "${FREERADIUS_DIR}/sites-available/inner-tunnel"
-sed -i '370,381 {s/^/##/}' "${FREERADIUS_DIR}/sites-available/inner-tunnel"
+INNER_TUNNEL="${FREERADIUS_DIR}/sites-available/inner-tunnel"
+sed -i -E '/^[[:space:]]*(suffix|files|-ldap|radutmp)\b/s/^/## /' "${INNER_TUNNEL}"
+sed -i -E 's/^([[:space:]]*)-sql/\1sql/' "${INNER_TUNNEL}"
 
 log "Configurando sqlippool"
-sed -i '76 {s/^/#/}' "${FREERADIUS_DIR}/mods-available/sqlippool"
-sed -i '77 s/# *//' "${FREERADIUS_DIR}/mods-available/sqlippool"
-sed -i '66 s/# *//' "${FREERADIUS_DIR}/mods-available/sqlippool"
-sed -i 's/lease_duration = 3600/lease_duration = 1200/' "${FREERADIUS_DIR}/mods-available/sqlippool"
+SQLIPPOOL_CONF="${FREERADIUS_DIR}/mods-available/sqlippool"
+sed -i -E 's|^[[:space:]]*#?[[:space:]]*allow_duplicates = .*|        allow_duplicates = no|' "${SQLIPPOOL_CONF}"
+sed -i -E 's|^[[:space:]]*pool_key = "%\{NAS-Port\}"|#       pool_key = "%{NAS-Port}"|' "${SQLIPPOOL_CONF}"
+sed -i -E 's|^[[:space:]]*# *pool_key = "%\{Calling-Station-Id\}"|        pool_key = "%{Calling-Station-Id}"|' "${SQLIPPOOL_CONF}"
+sed -i 's/lease_duration = 3600/lease_duration = 1200/' "${SQLIPPOOL_CONF}"
 
 mysql_radius < "${FREERADIUS_DIR}/mods-config/sql/ippool/mysql/schema.sql" || true
 mysql_radius < "${FREERADIUS_DIR}/mods-config/sql/ippool/mysql/procedure.sql" || true
@@ -282,12 +420,10 @@ EOF
 
 log "Habilitando e reiniciando FreeRADIUS"
 systemctl enable freeradius
+freeradius -C
 systemctl restart freeradius
 
-log "Validando configuração"
-freeradius -C
-
-log "Concluído"
+log "Concluido"
 echo "phpMyAdmin: http://IP_DO_SERVIDOR/phpmyadmin/"
 echo "Banco Radius: ${RADIUS_DB}"
-echo "Usuário Radius: ${RADIUS_USER}"
+echo "Usuario Radius: ${RADIUS_USER}"

@@ -14,14 +14,23 @@ Script de instalacao automatizada para Debian 13 com:
 Execute como root em um Debian 13 limpo:
 
 ```bash
-curl -fsSL https://SEU_DOMINIO/install-freeradius-debian13.sh | bash
+curl -fsSL https://raw.githubusercontent.com/leoseras/FreeRadius-MariaDB-phpMyAdmin-Install/main/install-freeradius-debian13.sh | bash
 ```
+
+O instalador vai solicitar a senha no terminal e confirmar antes de continuar.
+Essa senha sera aplicada ao root do MariaDB, ao usuario `radius` e ao phpMyAdmin.
 
 Ou baixe e execute localmente:
 
 ```bash
 wget https://SEU_DOMINIO/install-freeradius-debian13.sh
 bash install-freeradius-debian13.sh
+```
+
+Para automacao sem prompt interativo:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/leoseras/FreeRadius-MariaDB-phpMyAdmin-Install/main/install-freeradius-debian13.sh | RADIUS_INSTALL_PASSWORD='sua-senha' bash
 ```
 
 ## Observacao
